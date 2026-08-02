@@ -29,6 +29,17 @@ h1 .sub{color:var(--accent); font-size:.8rem; letter-spacing:.25em; display:bloc
 #dropZone strong{color:var(--text);}
 #fileInput{display:none;}
 
+/* 曲リスト */
+#songList{display:none; background:var(--panel); border:1px solid var(--line);
+  border-radius:12px; padding:14px;}
+.slHead{font-size:.85rem; letter-spacing:.15em; color:var(--sub); margin-bottom:10px;}
+.songBtn{display:block; width:100%; text-align:left; margin-bottom:6px;
+  padding:11px 14px; font-size:.95rem; border-radius:8px;}
+.songBtn:hover{border-color:var(--accent); background:var(--panel2);}
+.songBtn.local{color:var(--sub); border-style:dashed; font-size:.85rem;}
+#utilBar{margin-top:8px; display:none; gap:8px; flex-wrap:wrap;}
+#utilBar button{font-size:.8rem; padding:5px 10px;}
+
 /* トランスポート */
 #player{display:none;}
 #transport{background:var(--panel); border:1px solid var(--line); border-radius:12px;
@@ -102,6 +113,7 @@ footer{margin-top:26px; color:var(--sub); font-size:.78rem; line-height:1.7;}
   ここに .mid ファイルをドラッグ＆ドロップ<br>または <strong>クリックしてファイルを選択</strong>
 </div>
 <input type="file" id="fileInput" accept=".mid,.midi,audio/midi">
+<div id="songList"></div>
 
 <div id="player">
   <div id="transport">
@@ -483,35 +495,125 @@ function loadBuffer(buf, name){
 function loadFile(f){
   const r=new FileReader();
   r.onload=()=>{
-    try{ loadBuffer(r.result, f.name); }
+    try{
+      loadBuffer(r.result, f.name);
+      songList.style.display="none";
+      history.replaceState(null, "", location.pathname);
+      if(repoFiles&&repoFiles.length) showUtilBar();
+    }
     catch(err){ alert("読み込みに失敗しました: "+err.message); }
   };
   r.readAsArrayBuffer(f);
 }
-/* URLパラメータ ?file=xxx.mid による自動読み込み */
-(async function autoLoad(){
-  const param=new URLSearchParams(location.search).get("file");
-  if(!param) return;
-  /* 同一サイト内の相対パスのみ許可(外部URLの読み込みは不可) */
-  if(/^[a-z]+:|^\/\//i.test(param)){
-    fileMeta.textContent="外部URLは指定できません。同じサイト内のファイル名を指定してください。";
-    return;
-  }
-  const shown=decodeURIComponent(param.split("/").pop());
-  fileMeta.textContent=shown+" を読み込んでいます…";
+/* ============ GitHub上のMIDI一覧と自動読み込み ============ */
+let repoFiles=null;
+const songList=$("songList");
+
+async function getRepoMidiList(){
+  /* 1) songs.json があればそれを優先(手動管理したい場合用) */
   try{
-    const res=await fetch(param);
-    if(!res.ok) throw new Error("HTTP "+res.status+" ("+shown+" が見つかりません)");
-    const buf=await res.arrayBuffer();
-    loadBuffer(buf, shown);
-    dropZone.style.display="none";
-    const alt=document.createElement("button");
-    alt.textContent="別のMIDIファイルを開く";
-    alt.style.cssText="margin-top:8px;font-size:.8rem;padding:5px 10px;";
-    alt.addEventListener("click",()=>fileInput.click());
-    fileMeta.after(alt);
-  }catch(err){
-    fileMeta.textContent="自動読み込みに失敗しました: "+err.message;
+    const r=await fetch("songs.json",{cache:"no-store"});
+    if(r.ok){
+      const j=await r.json();
+      return j.map(x=> typeof x==="string"
+        ? {path:x, title:decodeURIComponent(x.split("/").pop())}
+        : {path:x.file, title:x.title||x.file});
+    }
+  }catch(e){}
+  /* 2) GitHub Pages上ならAPIでリポジトリ内の .mid を自動検出 */
+  const m=location.hostname.match(/^([^.]+)\.github\.io$/i);
+  if(!m) return null;
+  const owner=m[1];
+  const seg=location.pathname.split("/").filter(Boolean);
+  const repo=(seg.length && !/\.html?$/i.test(seg[0])) ? seg[0] : owner+".github.io";
+  try{
+    const ri=await fetch("https://api.github.com/repos/"+owner+"/"+repo);
+    if(!ri.ok) throw 0;
+    const branch=(await ri.json()).default_branch || "main";
+    const tr=await fetch("https://api.github.com/repos/"+owner+"/"+repo+
+      "/git/trees/"+branch+"?recursive=1");
+    if(!tr.ok) throw 0;
+    const tree=(await tr.json()).tree || [];
+    const list=tree.filter(x=>x.type==="blob" && /\.midi?$/i.test(x.path))
+      .map(x=>({path:x.path, title:x.path.replace(/\.midi?$/i,"").split("/").pop()}));
+    list.sort((a,b)=>a.path.localeCompare(b.path,"ja"));
+    return list.length? list : null;
+  }catch(e){ return null; }
+}
+
+function renderSongList(){
+  dropZone.style.display="none";
+  songList.innerHTML='<div class="slHead">曲を選んでください</div>';
+  for(const f of repoFiles){
+    const b=document.createElement("button");
+    b.className="songBtn"; b.textContent="♪ "+f.title;
+    b.addEventListener("click",()=>selectSong(f));
+    songList.appendChild(b);
+  }
+  const local=document.createElement("button");
+  local.className="songBtn local";
+  local.textContent="手元の .mid ファイルを開く…";
+  local.addEventListener("click",()=>fileInput.click());
+  songList.appendChild(local);
+  songList.style.display="block";
+}
+
+async function fetchAndLoad(path, title){
+  fileMeta.textContent=title+" を読み込んでいます…";
+  const res=await fetch(path);
+  if(!res.ok) throw new Error("HTTP "+res.status+" ("+title+" が見つかりません)");
+  loadBuffer(await res.arrayBuffer(), title);
+}
+async function selectSong(f){
+  try{
+    await fetchAndLoad(f.path, f.title);
+    history.replaceState(null, "", "?file="+encodeURIComponent(f.path));
+    songList.style.display="none";
+    showUtilBar();
+  }catch(err){ fileMeta.textContent="読み込みに失敗しました: "+err.message; }
+}
+
+function showUtilBar(){
+  let bar=$("utilBar");
+  if(!bar){
+    bar=document.createElement("div"); bar.id="utilBar";
+    const back=document.createElement("button");
+    back.id="backToList"; back.textContent="曲リストへ戻る";
+    back.addEventListener("click",()=>{
+      if(playing) pausePlayback();
+      renderSongList();
+      history.replaceState(null, "", location.pathname);
+    });
+    const local=document.createElement("button");
+    local.textContent="手元のファイルを開く";
+    local.addEventListener("click",()=>fileInput.click());
+    bar.appendChild(back); bar.appendChild(local);
+    fileMeta.after(bar);
+  }
+  bar.querySelector("#backToList").style.display=(repoFiles&&repoFiles.length)?"":"none";
+  bar.style.display="flex";
+}
+
+/* 初期化: ?file=指定があれば読み込み、なければ曲リストを表示 */
+(async function init(){
+  repoFiles=await getRepoMidiList();
+  const param=new URLSearchParams(location.search).get("file");
+  if(param){
+    if(/^[a-z]+:|^\/\//i.test(param)){
+      fileMeta.textContent="外部URLは指定できません。同じサイト内のファイル名を指定してください。";
+      return;
+    }
+    const shown=decodeURIComponent(param.split("/").pop());
+    try{
+      await fetchAndLoad(param, shown);
+      dropZone.style.display="none";
+      showUtilBar();
+    }catch(err){
+      fileMeta.textContent="自動読み込みに失敗しました: "+err.message;
+      if(repoFiles&&repoFiles.length) renderSongList();
+    }
+  }else if(repoFiles&&repoFiles.length){
+    renderSongList();
   }
 })();
 
