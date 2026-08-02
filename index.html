@@ -468,26 +468,52 @@ dropZone.addEventListener("drop",e=>{
 });
 fileInput.addEventListener("change",()=>{ if(fileInput.files[0]) loadFile(fileInput.files[0]); });
 
+function loadBuffer(buf, name){
+  if(ctx) stopPlayback(false);
+  song=parseMidi(buf);
+  if(!song.tracks.length) throw new Error("音符のあるトラックが見つかりません");
+  buildStates();
+  if(ctx) connectStates();
+  buildTrackUI();
+  fileMeta.textContent = name+"　("+song.tracks.length+"パート / "+fmtTime(song.duration)+")";
+  playerEl.style.display="block";
+  seekBar.value=0; songPos=0; anchorPos=0;
+  updateTimeUI();
+}
 function loadFile(f){
   const r=new FileReader();
   r.onload=()=>{
-    try{
-      if(ctx) stopPlayback(false);
-      song=parseMidi(r.result);
-      if(!song.tracks.length) throw new Error("音符のあるトラックが見つかりません");
-      buildStates();
-      if(ctx) connectStates();
-      buildTrackUI();
-      fileMeta.textContent = f.name+"　("+song.tracks.length+"パート / "+fmtTime(song.duration)+")";
-      playerEl.style.display="block";
-      seekBar.value=0; songPos=0; anchorPos=0;
-      updateTimeUI();
-    }catch(err){
-      alert("読み込みに失敗しました: "+err.message);
-    }
+    try{ loadBuffer(r.result, f.name); }
+    catch(err){ alert("読み込みに失敗しました: "+err.message); }
   };
   r.readAsArrayBuffer(f);
 }
+/* URLパラメータ ?file=xxx.mid による自動読み込み */
+(async function autoLoad(){
+  const param=new URLSearchParams(location.search).get("file");
+  if(!param) return;
+  /* 同一サイト内の相対パスのみ許可(外部URLの読み込みは不可) */
+  if(/^[a-z]+:|^\/\//i.test(param)){
+    fileMeta.textContent="外部URLは指定できません。同じサイト内のファイル名を指定してください。";
+    return;
+  }
+  const shown=decodeURIComponent(param.split("/").pop());
+  fileMeta.textContent=shown+" を読み込んでいます…";
+  try{
+    const res=await fetch(param);
+    if(!res.ok) throw new Error("HTTP "+res.status+" ("+shown+" が見つかりません)");
+    const buf=await res.arrayBuffer();
+    loadBuffer(buf, shown);
+    dropZone.style.display="none";
+    const alt=document.createElement("button");
+    alt.textContent="別のMIDIファイルを開く";
+    alt.style.cssText="margin-top:8px;font-size:.8rem;padding:5px 10px;";
+    alt.addEventListener("click",()=>fileInput.click());
+    fileMeta.after(alt);
+  }catch(err){
+    fileMeta.textContent="自動読み込みに失敗しました: "+err.message;
+  }
+})();
 
 function buildTrackUI(){
   trackArea.innerHTML="";
